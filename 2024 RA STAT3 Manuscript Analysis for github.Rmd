@@ -1,0 +1,3085 @@
+---
+title: "2024 RA STAT3 Manuscript Analysis"
+output: html_document
+date: "2024-01-10"
+---
+# SETUP
+```{r}
+library(tidyverse)
+library(readxl)
+library(openxlsx)
+library(rstatix)
+library(writexl)
+library(modelr)
+library(nnet)
+library(ggeffects)
+RA<- read_excel("2024 STAT3 Manuscript R.xlsx", na=c("", "na"))
+RA
+
+uvanorm <- read_excel("4-30-23 9 Normal Controls Demographics and VAFs.xlsx")
+uvanorm
+
+valori <- read_excel("4-30-23 Valori overall cohort with VAFs.xlsx")
+valori
+```
+
+# Clean the Data
+need to rename a lot of chi square columns
+```{r}
+RA<- RA %>%
+  rename("Mutation"=...1, 
+         "age" = `Current Age`,
+         "pt_global"=`pt global`,
+         "pro_global" = `pro global`,
+         "eth" = `Ethnicity - standard nomenclature`,
+         "erosive" = `Erosive disease standard nomenclature (Y/N/U)`,
+         "RF" = `RF +`,
+         "RFpos" = `RF 0-20 U/mL normal range, greater than 20.0 is positive)`,
+         "CCP" = `CCP+`,
+         "CCPpos"= `Cyclic citrullinated peptide IgG (greater than 3.0 U/mL is positive)`,
+         "hopCCP" = `hopkins ccp`,
+         "hopCCPpos" = `hopkins ccp positivity (cutoff >20 pos)`,
+         "CRPpos" = `C-reactive protein (<10mg/L normal) greater than 10.0 is positive`,
+         "ESRpos" = `ESR (less than 22 mm/hr for men and less than 29 mm/hr for women is negative)`,
+         "txnum" = `# of treatments (current + past)`,
+         "tnf" = `TNF Exposure`,
+         "mtx" = `Prior use of MTX (Y/N)`,
+         "mtxnow" = `Currently on MTX`,
+         "mtxb4" = `Previously on MTX`,
+         "RFnum" = `RF numerical`,
+         "CCPnum" = `CCP numerical`,
+         "RAtime" = `Time since dx (in years)`, 
+         "descriptive" = `descriptive score`)
+
+
+```
+
+show examples of what the imported excel of RA patient data contains
+```{r}
+glimpse(RA)
+```
+
+
+
+
+several columns have the word none, and we've coded to be an empty cell
+```{r}
+RA %>%
+  select(contains("global"))
+
+RA %>%
+  count(pro_global)
+
+RA <- RA %>%
+  mutate(across(contains("global"), ~if_else(.x=="none", NA_character_, .x))) %>%
+  mutate(across(contains("global"), as.numeric))
+
+```
+
+clean Gender so the m and f are all lower case
+```{r}
+RA <- RA %>%
+  mutate(Gender = if_else(Gender == "f"| Gender == "F", "f", "m"))
+
+```
+
+clean mtx so no = n and yes = y, and it's not mixed
+```{r}
+RA <- RA %>%
+  mutate(mtx = if_else(mtx == "n"| mtx == "no", "n", "y", "yes")) 
+
+```
+
+Clean Erosive to set U as missing
+```{r}
+RA <- RA %>%
+  mutate(erosive = if_else(erosive == "U", NA_character_, erosive))
+
+```
+
+Clean CCP to set characters as missing
+```{r}
+RA <- RA %>%
+  mutate(CCP = if_else(CCP == "None", NA_character_, CCP)) %>% 
+  mutate(CCP = if_else(CCP == "not done per UVA note", NA_character_, CCP)) %>% 
+  mutate(CCP = if_else(CCP == "See note?", NA_character_, CCP))
+
+```
+
+
+clean up D661Y FA column
+edited from original code to get rid of parse
+```{r}
+RA %>%
+  select(`D661Y FA`)
+
+#try parse_number
+RA %>%
+  mutate(D661Y = `D661Y FA`)%>%
+  select(`D661Y FA`, D661Y)
+
+RA <- RA %>%
+  mutate(D661Y = `D661Y FA`)
+  
+```
+
+create type of mutation column
+```{r}
+RA %>%
+  mutate(muttype = case_when(D661Y >= 0.05& `Y640F FA` >= 0.05 ~ NA_character_,
+                             D661Y >= 0.05 ~ "D661Y", 
+                             `Y640F FA` >= 0.05~ "Y640F",
+                             TRUE ~ "WT")) %>%
+  count(muttype)
+
+RA <- RA %>%
+  mutate(muttype = case_when(D661Y >= 0.05& `Y640F FA` >= 0.05 ~ NA_character_,
+                             D661Y >= 0.05 ~ "D661Y", 
+                             `Y640F FA` >= 0.05~ "Y640F",
+                             TRUE ~ "WT")) 
+```
+
+create type of mutation column with >0.008 lowvaf cutoff
+```{r}
+RA %>%
+  mutate(muttypelow = case_when(D661Y >= 0.008& `Y640F FA` >= 0.008 ~ NA_character_,
+                             D661Y >= 0.008 ~ "D661Y", 
+                             `Y640F FA` >= 0.008~ "Y640F",
+                             TRUE ~ "WT")) %>%
+  count(muttypelow)
+
+RA <- RA %>%
+  mutate(muttypelow = case_when(D661Y >= 0.008& `Y640F FA` >= 0.008 ~ NA_character_,
+                             D661Y >= 0.008 ~ "D661Y", 
+                             `Y640F FA` >= 0.008~ "Y640F",
+                             TRUE ~ "WT"))
+```
+
+create just mutant column
+```{r}
+RA %>%
+  mutate(muts = case_when(D661Y >= 0.05& `Y640F FA` >= 0.05 ~ NA_character_,
+                             D661Y >= 0.05 ~ "D661Y", 
+                             `Y640F FA` >= 0.05~ "Y640F",
+                             TRUE ~ NA_character_)) %>%
+  count(muts)
+
+RA <- RA %>%
+  mutate(muts = case_when(D661Y >= 0.05& `Y640F FA` >= 0.05 ~ NA_character_,
+                             D661Y >= 0.05 ~ "D661Y", 
+                             `Y640F FA` >= 0.05~ "Y640F",
+                             TRUE ~ NA_character_)) 
+```
+
+create just mutant column with 0.008 cutoff
+```{r}
+RA %>%
+  mutate(muts008 = case_when(D661Y >= 0.008& `Y640F FA` >= 0.008 ~ NA_character_,
+                             D661Y >= 0.008 ~ "D661Y", 
+                             `Y640F FA` >= 0.008~ "Y640F",
+                             TRUE ~ NA_character_)) %>%
+  count(muts008)
+
+RA <- RA %>%
+  mutate(muts008 = case_when(D661Y >= 0.008& `Y640F FA` >= 0.008 ~ NA_character_,
+                             D661Y >= 0.008 ~ "D661Y", 
+                             `Y640F FA` >= 0.008~ "Y640F",
+                             TRUE ~ NA_character_))
+```
+
+
+
+create y/n mutation column for VAF>0.008
+```{r}
+RA %>%
+  mutate(lowvafmut = case_when(D661Y >= 0.008 & `Y640F FA` >= 0.008 ~ "y",
+                             D661Y >= 0.008 ~ "y", 
+                             `Y640F FA` >= 0.008~ "y",
+                             TRUE ~ "n")) %>%
+  count(lowvafmut)
+
+RA <- RA %>%
+  mutate(lowvafmut = case_when(D661Y >= 0.008 & `Y640F FA` >= 0.008 ~ "y",
+                             D661Y >= 0.008 ~ "y", 
+                             `Y640F FA` >= 0.008~ "y",
+                             TRUE ~ "n")) 
+```
+
+create y/n mutation column for y640f and d661y VAF>0.008
+```{r}
+RA %>%
+  mutate(ymut = case_when(`Y640F FA` >= 0.008~ "y",
+                             TRUE ~ "n")) %>%
+  count(ymut)
+
+RA %>%
+  mutate(dmut = case_when(   D661Y >= 0.008 ~ "y", 
+                             TRUE ~ "n")) %>%
+  count(dmut)
+
+RA <- RA %>%
+  mutate(ymut = case_when(`Y640F FA` >= 0.008~ "y",
+                             TRUE ~ "n"))
+RA <- RA %>%
+  mutate(dmut = case_when(   D661Y >= 0.008 ~ "y", 
+                             TRUE ~ "n"))
+```
+
+
+create double positive column of RF and CCP
+```{r}
+RA %>%
+  mutate(rfccp = case_when(RFpos == "positive" & CCPpos == "positive" ~ "positive",
+                           RFpos == "negative" ~ "negative",
+                           CCPpos == "negative" ~ "negative",
+                           RFpos == "negative" & CCPpos == "positive" ~ "negative",
+                           RFpos == "positive" & CCPpos == "negative" ~ "negative",
+                             TRUE ~ NA_character_)) %>%
+  count(rfccp)
+
+RA <- RA %>%
+  mutate(rfccp = case_when(RFpos == "positive" & CCPpos == "positive" ~ "positive",
+                           RFpos == "negative" ~ "negative",
+                           CCPpos == "negative" ~ "negative",
+                           RFpos == "negative" & CCPpos == "positive" ~ "negative",
+                           RFpos == "positive" & CCPpos == "negative" ~ "negative",
+                             TRUE ~ NA_character_))
+```
+
+###cleaning RF column
+removing all less than signs and setting min to 20 because of different sensitivities of different tests
+
+this parses the data and gets rid of anything that is not a number next to a number, so all <20 turns to 20
+```{r}
+RA <- RA %>%
+  mutate(RFnumna=parse_number(RF))
+  
+  
+RA %>% 
+  ggplot(aes(RFnumna, fill=Mutation)) + geom_density()
+```
+
+creating another RF variable where neg=20, positive = median of RF >20, 164.5
+```{r}
+RA %>% 
+  filter(RFnumna > 20) %>% 
+  summarise(median(RFnumna))
+
+RA %>% 
+  filter(RFnumna <= 20) %>% 
+  summarise(median(RFnumna))
+
+```
+
+```{r}
+RA <-RA %>% 
+  mutate(RFnum = case_when(RF == "positive" ~ 164.5, 
+                           RF == "neg" ~ 20,
+                           TRUE~RFnumna)) 
+```
+
+creates a conservative column with positives set at the minimum limit of detection to be a positive
+```{r}
+RA <-RA %>% 
+  mutate(RFcons = case_when(RF == "positive" ~ 21, 
+                           RF == "neg" ~ 20,
+                           TRUE~RFnumna)) 
+```
+
+###cleaning CCP column
+removing all less than signs and setting negative values to median of <3 because of different sensitivities of different tests
+
+```{r}
+RA <- RA %>%
+  mutate(CCPnumna=parse_number(`CCP`))
+  
+  
+RA %>% 
+  ggplot(aes(CCPnumna, fill=Mutation)) + geom_density()
+```
+
+creating another CCP variable where neg=median of CCP <3, 0.5 , positive = median of RF >3, 250
+```{r}
+RA %>% 
+  filter(CCPnumna > 3) %>% 
+  summarise(median(CCPnumna))
+
+RA %>% 
+  filter(CCPnumna <= 3) %>% 
+  summarise(median(CCPnumna))
+
+```
+
+
+```{r}
+RA <- RA %>% 
+  mutate(CCPnum = case_when(CCP == "positive" ~ 250, 
+                           CCP == "neg" ~ 0.5,
+                           TRUE~CCPnumna)) 
+```
+
+
+### clean normals
+make vector of desired variables for normal testing
+```{r}
+norms <- c("Age", "Y640F VAF", "D661Y VAF", "Gender")
+normis <-c("age", "Avg Y640F VAF", "Avg D661Y VAF", "sex")
+
+
+```
+test the vector
+```{r}
+uvanorm %>% 
+  select(all_of(norms))
+valori %>% 
+  select(all_of(normis))
+
+
+```
+
+clean Gender so the m and f are all lower case
+```{r}
+uvanorm <- uvanorm %>%
+  mutate(Gender = if_else(Gender == "Female", "f", Gender)) %>%
+           mutate(Gender = if_else(Gender == "Male", "m", Gender))
+
+valori <- valori %>%
+  mutate(sex = if_else(sex == "F", "f", sex)) %>%
+           mutate(sex = if_else(sex == "M", "m", sex))
+```
+
+
+
+create 2 clean datasets to merge together
+```{r}
+uvanormal <- uvanorm %>% 
+  select(all_of(norms)) %>%
+  mutate(paper = "uva", status = "normal")
+
+valoris <- valori %>% 
+  select(all_of(normis)) %>%
+  mutate(paper = "v", status = "normal")
+
+
+```
+
+merge normal datasets
+always check dimensions of result for join
+```{r}
+allnorms <- uvanormal %>%
+  full_join(valoris, by = c("Age"= "age", "Y640F VAF" = "Avg Y640F VAF","D661Y VAF"="Avg D661Y VAF","Gender" = "sex", "paper", "status"))
+
+#fix names so there's no spaces
+allnorms <-allnorms %>%
+  rename("Y640F"=`Y640F VAF`, 
+         "D661Y" = `D661Y VAF`)
+
+```
+
+
+### make RA dataset for comparison to normals
+```{r}
+RAcompare <- RA %>% select(age, Gender, eth, `Y640F FA`, D661Y) %>%
+  mutate(status = "RA", paper = "uva")
+
+#join RAcompare to allnorms
+
+alldat <- RAcompare %>%
+  full_join(allnorms, by = c("age" = "Age", "Y640F FA" = "Y640F", "D661Y", "Gender", "status", "paper"))
+
+#fix names so there's no spaces
+alldat <- alldat %>%
+  rename("Y640F"=`Y640F FA`)
+              
+```
+
+create log of D661Y and Y640F
+constant is half of lowest value
+```{r}
+alldat <- alldat %>%
+  mutate(logY640F = log(Y640F + 0.004))
+
+alldat <- alldat %>%
+  mutate(logD661Y = log(D661Y + 0.004))
+
+```
+
+make a column for yes no mutation
+```{r}
+alldat <- alldat %>%
+  mutate(muttype = case_when(D661Y >= 0.05& Y640F >= 0.05 ~ "double",
+                             D661Y >= 0.05 ~ "D661Y", 
+                             Y640F >= 0.05~ "Y640F",
+                             TRUE ~ "WT"))
+ 
+#count(muttype)
+
+alldat <- alldat %>%
+  mutate(lowvafmut = case_when(D661Y >= 0.005& Y640F >= 0.005 ~ "double",
+                             D661Y >= 0.005 ~ "D661Y", 
+                             Y640F >= 0.005~ "Y640F",
+                             TRUE ~ "WT"))
+#count(lowvafmut)
+```
+
+# Chi Square testing by Mutation Y/N
+
+need to run Gender, eth, erosive, hopCCPpos, CCPpos, ESRpos, RFpos, rfccp, mtx, mtxnow, mtxb4, descriptive, tnf
+
+checking how clean each variable is
+```{r}
+RA %>%
+  count(`descriptive`)
+```
+
+
+```{r}
+xtabs(~CCPpos + Mutation, data = RA)
+
+```
+
+### Run Gender Chi Square
+
+```{r}
+xtgender <- xtabs(~Gender + Mutation, data = RA)
+xtgender
+
+#get the proportion of each gender that has a mutation
+prop.table(xtgender, 1)
+```
+
+
+```{r}
+set.seed(83)
+chisq.test(xtgender, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+chisq.test(xtgender, simulate.p.value = TRUE)$expected
+```
+### Run all Chi Square Tests
+
+
+```{r}
+myvars<-c("Gender", "eth", "erosive", "hopCCPpos", "CCPpos", "ESRpos", "mtx", "mtxnow", "mtxb4",  "RFpos", "rfccp", "descriptive","tnf" )
+```
+
+test the vector
+```{r}
+RA %>% select(all_of(myvars))
+
+```
+
+check count on each variable
+```{r}
+RA %>%
+  count(mtx)
+```
+
+
+make a long form dataset with all vars in one column for .05, .008, and y640f .008, and d661y .008 cutoffs
+```{r}
+RAlong <- RA %>%
+  select(all_of(myvars), Mutation) %>%
+  pivot_longer(Gender:tnf, names_to = "var", values_to = "values")
+
+RAlong
+
+Ralong008 <- RA %>%
+  select(all_of(myvars), lowvafmut) %>%
+  pivot_longer(Gender:tnf, names_to = "var", values_to = "values")
+
+Ralong008
+
+Ralongy <- RA %>%
+  select(all_of(myvars), ymut) %>%
+  pivot_longer(Gender:tnf, names_to = "var", values_to = "values")
+
+Ralongy
+
+Ralongd <- RA %>%
+  select(all_of(myvars), dmut) %>%
+  pivot_longer(Gender:tnf, names_to = "var", values_to = "values")
+
+Ralongd
+```
+
+
+```{r}
+set.seed(83)
+RAlong %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + Mutation))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+
+set.seed(83)
+Ralong008 %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + lowvafmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+Ralongy %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + ymut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+Ralongd %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + dmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+```
+
+make datasets containing all p values
+```{r}
+set.seed(83)
+Pchi <-
+RAlong %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + Mutation))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+Pchi008 <-
+Ralong008 %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + lowvafmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+Pchiy <-
+Ralongy %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + ymut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+Pchid <-
+Ralongd %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + dmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+```
+
+
+
+adjust p values for multiple testing
+```{r}
+set.seed(83)
+RAlong %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + Mutation))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+```
+
+
+make datasets for adding to later excel sheet
+```{r}
+set.seed(83)
+padjchi <-
+RAlong %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + Mutation))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+set.seed(83)
+padjchi008 <-
+Ralong008 %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + lowvafmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+set.seed(83)
+padjchiy <-
+Ralongy %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + ymut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+set.seed(83)
+padjchid <-
+Ralongd %>%
+  group_by(var) %>%
+  summarise(xtab = list(xtabs(~values + dmut))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+```
+
+
+
+# Chi Square testing by Mutation Type Y640F, D661Y, WT
+
+need to run Gender, eth, erosive, hopCCPpos, CCPpos, CRPpos, ESRpos, RFpos, rfccp, mtx, mtxnow, mtxb4, tnf, descriptive score
+
+###check single chi square by mutation type including wt category to see if it works
+```{r}
+xthopCCPpostyp <- xtabs(~hopCCPpos + muttype, data = RA)
+xthopCCPpostyp
+
+#get the proportion of each gender that has a mutation
+prop.table(xthopCCPpostyp, 2)
+```
+
+```{r}
+set.seed(83)
+chisq.test(xthopCCPpostyp, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+hopccpe <- chisq.test(xthopCCPpostyp, simulate.p.value = TRUE)$expected
+hopccpe
+```
+
+see the chi square contributions
+```{r}
+((xthopCCPpostyp-hopccpe)^2)/(hopccpe)
+```
+###check single chi square by mutation type minus wt category to see if it works
+```{r}
+xthopCCPposmut <- xtabs(~hopCCPpos + muts, data = RA)
+xthopCCPposmut
+
+#get the proportion of each gender that has a mutation
+prop.table(xthopCCPposmut, 2)
+```
+
+```{r}
+set.seed(83)
+chisq.test(xthopCCPposmut, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+hopmccpe <- chisq.test(xthopCCPposmut, simulate.p.value = TRUE)$expected
+hopmccpe
+```
+
+see the chi square contributions
+```{r}
+((xthopCCPposmut-hopmccpe)^2)/(hopmccpe)
+```
+
+check historical ccp, because expecting to see a significant p value
+```{r}
+xtCCPposmut <- xtabs(~CCPpos + muts, data = RA)
+xtCCPposmut
+
+#get the proportion of each gender that has a mutation
+prop.table(xtCCPposmut, 2)
+```
+
+```{r}
+set.seed(83)
+chisq.test(xtCCPposmut, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+chisq.test(xtCCPposmut, simulate.p.value = TRUE)$expected
+```
+
+testing CRP table - expected values are too low to run chi square, remove from myvars
+```{r}
+xtCRPposmut <- xtabs(~CRPpos + Mutation, data = RA)
+xtCRPposmut
+
+#get the proportion of each gender that has a mutation
+prop.table(xtCRPposmut, 2)
+
+#test expected values
+chisq.test(xtCRPposmut)$expected
+```
+
+### Run all chi square by mutation type
+
+make a long form dataset with all vars in one column
+```{r}
+RAlongtyp <- RA %>%
+  select(all_of(myvars), muttype) %>%
+  pivot_longer(Gender:tnf, names_to = "vart", values_to = "valuest")
+
+RAlongtyp
+
+#make one with cutoff of 0.008 VAF
+RAlongtyp008 <- RA %>%
+  select(all_of(myvars), muttypelow) %>%
+  pivot_longer(Gender:tnf, names_to = "vart", values_to = "valuest")
+
+RAlongtyp008
+```
+
+```{r}
+set.seed(83)
+RAlongtyp %>%
+  group_by(vart) %>%
+  summarise(xtab = list(xtabs(~valuest + muttype))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+set.seed(83)
+RAlongtyp008 %>%
+  group_by(vart) %>%
+  summarise(xtab = list(xtabs(~valuest + muttypelow))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+  
+```
+
+adjust p values for multiple testing
+```{r}
+set.seed(83)
+RAlongtyp %>%
+  group_by(vart) %>%
+  summarise(xtab = list(xtabs(~valuest + muttype))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj) %>% 
+  write_csv(file = "muttypepadj.csv") 
+
+```
+
+make datasets for adding to later excel sheet
+```{r}
+set.seed(83)
+padjchimut <-
+RAlongtyp %>%
+  group_by(vart) %>%
+  summarise(xtab = list(xtabs(~valuest + muttype))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+set.seed(83)
+padjchimut008 <-
+RAlongtyp008 %>%
+  group_by(vart) %>%
+  summarise(xtab = list(xtabs(~valuest + muttypelow))) %>%
+  mutate(chisq = map(xtab,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))%>%
+  arrange(p.adj)
+
+
+```
+
+
+### Run chi square comparing mutation types to each other
+
+make a long form dataset with all vars in one column
+```{r}
+RAlongmut <- RA %>%
+  select(all_of(myvars), muts) %>%
+  pivot_longer(Gender:tnf, names_to = "varm", values_to = "valuesm")
+
+RAlongmut
+```
+
+make a long form dataset with all vars in one column
+```{r}
+RAlongmut008 <- RA %>%
+  select(all_of(myvars), muts008) %>%
+  pivot_longer(Gender:tnf, names_to = "varm", values_to = "valuesm")
+
+RAlongmut008
+```
+
+```{r}
+set.seed(83)
+RAlongmut %>%
+  group_by(varm) %>%
+  summarise(xtabm = list(xtabs(~valuesm + muts))) %>%
+  mutate(chisq = map(xtabm,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+#checking the chi square on those with a mutation cutoff of .008
+set.seed(83)
+RAlongmut008 %>%
+  group_by(varm) %>%
+  summarise(xtabm = list(xtabs(~valuesm + muts008))) %>%
+  mutate(chisq = map(xtabm,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  arrange(p)
+
+```
+
+adjust p values for multiple testing
+```{r}
+set.seed(83)
+RAlongmut %>%
+  group_by(varm) %>%
+  summarise(xtabm = list(xtabs(~valuesm + muts))) %>%
+  mutate(chisq = map(xtabm,~chisq_test(.x, simulate.p.value = TRUE))) %>%
+  unnest(cols = chisq) %>%
+  mutate(p.adjm = p.adjust(p, method = "holm"))%>%
+  arrange(p.adjm)
+
+```
+
+# Chi Square of RA vs Normal ddPCR
+
+### Y640F
+read in data from powerpoint (Most Interesting Figures...)
+first row is normals
+second row is RA
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcry640f <- c(8, 0, 1, 57, 31, 10)
+
+pcry640f <- matrix(pcry640f, nrow = 2, byrow = TRUE)
+pcry640f
+```
+```{r}
+#get the proportion of each range that has a mutation
+prop.table(pcry640f, 1)
+```
+```{r}
+set.seed(83)
+chisq.test(pcry640f, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcry640f, simulate.p.value = TRUE)$expected
+e
+```
+
+see the chi square contributions
+```{r}
+((pcry640f-e)^2)/(e)
+```
+
+### Y640F with UVA + Valori normals compared to UVA RA
+read in data from powerpoint (2024 Figures for RA STAT3 Manuscript. ppt)
+first row is normals
+second row is RA
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcry640f_all <- c(106, 0, 2, 57, 31, 10)
+
+pcry640f_all <- matrix(pcry640f_all, nrow = 2, byrow = TRUE)
+pcry640f_all
+```
+
+```{r}
+#get the proportion of each status that has that level of mutation
+prop.table(pcry640f_all, 1)
+```
+
+Conduct the chi square
+```{r}
+set.seed(83)
+chisq.test(pcry640f_all, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcry640f_all, simulate.p.value = TRUE)$expected
+e
+```
+
+see the chi square contributions
+```{r}
+((pcry640f_all-e)^2)/(e)
+```
+
+Normals and RA patients show a different distribution of mutations on Y640F. Specifically, the 0.005-0.05 shows the largest differences from what was expected by chance. We saw more people with RA in the 0.005-0.05 group than expected and we saw fewer normals in the 0.005-0.05 group than expected.
+
+### D661Y
+
+read in data from powerpoint (Most Interesting Figures...)
+first row is normals
+second row is RA
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcrd661y <- c(9, 0, 0, 73, 17, 8)
+
+pcrd661y <- matrix(pcrd661y, nrow = 2, byrow = TRUE)
+pcrd661y
+```
+```{r}
+#get the proportion of each range that has a mutation
+prop.table(pcrd661y, 1)
+```
+```{r}
+set.seed(83)
+chisq.test(pcrd661y, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcrd661y, simulate.p.value = TRUE)$expected
+e
+```
+see the chi square contributions
+```{r}
+((pcrd661y-e)^2)/(e)
+```
+### D661Y with UVA + Valori normals compared to UVA RA
+read in data from powerpoint (2024 Figures for RA STAT3 Manuscript. ppt)
+first row is normals
+second row is RA
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcry640f_all <- c(102, 0, 6, 73, 17, 8)
+
+pcry640f_all <- matrix(pcry640f_all, nrow = 2, byrow = TRUE)
+pcry640f_all
+```
+
+```{r}
+#get the proportion of each status that has that level of mutation
+prop.table(pcry640f_all, 1)
+```
+
+Conduct the chi square
+```{r}
+set.seed(83)
+chisq.test(pcry640f_all, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcry640f_all, simulate.p.value = TRUE)$expected
+e
+```
+
+see the chi square contributions
+```{r}
+((pcry640f_all-e)^2)/(e)
+```
+
+Normals and RA patients show a different distribution of mutations on D661Y. Specifically, the 0.005-0.05 shows the largest differences from what was expected by chance. We saw more people with RA in the 0.005-0.05 group than expected and we saw fewer normals in the 0.005-0.05 group than expected.
+
+### Y640F any mutation UVA
+read in data from powerpoint (2024 Figures for RA STAT3 Manuscript. ppt)
+first row is normals
+second row is RA
+columns are <threshold, any mutation
+```{r}
+y640f_any <- c(8, 1, 57, 41)
+
+y640f_any <- matrix(y640f_any, nrow = 2, byrow = TRUE)
+y640f_any
+```
+
+```{r}
+#get the proportion of each status that has that level of mutation
+prop.table(y640f_any, 1)
+```
+Conduct the chi square
+```{r}
+set.seed(83)
+chisq.test(y640f_any, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(y640f_any, simulate.p.value = TRUE)$expected
+e
+```
+
+### D661Y any mutation UVA
+read in data from powerpoint (2024 Figures for RA STAT3 Manuscript. ppt)
+first row is normals
+second row is RA
+columns are <threshold, any mutation
+```{r}
+d661y_any <- c(9, 0, 73, 25)
+
+d661y_any <- matrix(d661y_any, nrow = 2, byrow = TRUE)
+d661y_any
+```
+
+```{r}
+#get the proportion of each status that has that level of mutation
+prop.table(d661y_any, 1)
+```
+Conduct the chi square
+```{r}
+set.seed(83)
+chisq.test(d661y_any, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(d661y_any, simulate.p.value = TRUE)$expected
+e
+```
+### any mutation UVA
+read in data from manuscript (3-24 STAT3 Manuscript for editing)
+first row is normals
+second row is RA
+columns are <threshold, any mutation
+```{r}
+any <- c(8, 1, 46, 52)
+
+any <- matrix(any, nrow = 2, byrow = TRUE)
+any
+```
+```{r}
+#get the proportion of each status that has that level of mutation
+prop.table(any, 1)
+```
+Conduct the chi square
+```{r}
+set.seed(83)
+chisq.test(any, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(any, simulate.p.value = TRUE)$expected
+e
+```
+
+
+### Normals Valori et al Y640F
+read in data from powerpoint (Most Interesting Figures...)
+first row is our normals
+second row is valori et al normals
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcry640fv <- c(8, 0, 1, 98, 0, 1)
+
+pcry640fv <- matrix(pcry640fv, nrow = 2, byrow = TRUE)
+pcry640fv
+```
+
+```{r}
+#get the proportion of each range that has a mutation
+prop.table(pcry640fv, 1)
+```
+
+```{r}
+set.seed(83)
+chisq.test(pcry640fv, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcry640fv, simulate.p.value = TRUE)$expected
+e
+```
+
+### Normals Valori et al D661Y
+read in data from powerpoint (Most Interesting Figures...)
+first row is our normals
+second row is valori et al normals
+columns are <0.005%, 0.005-0.05%, >0.05%
+```{r}
+pcrd661yv <- c(8, 0, 1, 93, 0, 6)
+
+pcrd661yv <- matrix(pcrd661yv, nrow = 2, byrow = TRUE)
+pcrd661yv
+```
+
+```{r}
+#get the proportion of each range that has a mutation
+prop.table(pcrd661yv, 1)
+```
+
+```{r}
+set.seed(83)
+chisq.test(pcrd661yv, simulate.p.value = TRUE)
+
+# assumption of chi square is that expected values are all bigger than 1, see expected values
+e <- chisq.test(pcrd661yv, simulate.p.value = TRUE)$expected
+e
+```
+
+# Comparing Normals and RA
+
+### T TEST age normals Valori vs UVA 
+> from plot, t test not appropriate, need wilcox, lots of zeros so no log transform
+
+make a plot to see difference between normals valori vs uva
+```{r}
+allnorms %>%
+  ggplot(aes(Age, fill = paper)) +geom_density(alpha = 0.05)
+```
+
+```{r}
+wilcox.test(Age~paper, data = allnorms)
+
+#making table of p values for wilcox
+
+resultswcx <- tidy(wilcox.test(Age~paper, data = allnorms)) %>% 
+  mutate(var = "Normals Age Difference")
+```
+
+>compare uva RA to valori and uva normals combined
+
+make a plot to see age difference between normals vs RA uva
+```{r}
+alldat %>%
+  ggplot(aes(age, fill = status)) +geom_density(alpha = 0.05)
+```
+
+```{r}
+wilcox.test(age~status, data = alldat)
+
+#making table of p values for wilcox
+
+#resultswcx <- tidy(wilcox.test(age~status, data = alldat)) %>% 
+  #mutate(var = "Normals vs RA Age Difference")
+```
+###Determining best method for comparing normals and RA
+
+#### Explain VAF for each muation using RA status and age 
+>(mod3 from game plan)
+
+make a box plot
+added constant that was half of smallest value before log transform
+```{r}
+alldat %>%
+  ggplot(aes(status, Y640F)) + geom_boxplot()
+
+alldat %>%
+  ggplot(aes(status, log(Y640F+0.004))) + geom_boxplot()
+
+alldat %>%
+  ggplot(aes(status, D661Y)) + geom_boxplot()
+
+alldat %>%
+  ggplot(aes(status, log(D661Y+0.004))) + geom_boxplot()
+
+
+```
+
+make scatter plot showing age on x, vaf on y colored by RA status
+
+```{r}
+alldat %>%
+  ggplot(aes(age, logY640F, color = status)) + geom_point() +geom_smooth(method = "lm")
+
+alldat %>%
+  ggplot(aes(age, logD661Y, color = status)) + geom_point() +geom_smooth(method = "lm")
+
+alldat %>%
+  ggplot(aes(age, Y640F, color = status)) + geom_point()
+
+alldat %>%
+  ggplot(aes(age, D661Y, color = status)) + geom_point()
+
+```
+
+make linear models with VAF factoring in age
+
+```{r}
+mod3y <-lm(logY640F ~ status * age, data = alldat)
+mod3d <-lm(logD661Y ~ status * age, data = alldat)
+```
+
+```{r}
+mod3yb <-lm(logY640F ~ status + age, data = alldat)
+mod3db <-lm(logD661Y ~ status + age, data = alldat)
+
+```
+
+test if mods are different
+>a non-significant p value in either of these anovas tells us that the model without the interaction (mod3yb and mod3b) fit just as well as the models with the interaction, so prefer the smaller model (mod3yb and mod3db)
+
+```{r}
+anova(mod3y,mod3yb)
+
+anova(mod3d,mod3db)
+```
+interpretation of models
+
+```{r}
+summary(mod3yb)
+
+summary(mod3db)
+
+```
+
+show this model in a plot
+```{r}
+alldat %>%
+  add_predictions(mod3yb) %>%
+  ggplot(aes(age, pred, color = status))+ geom_line()
+
+alldat %>%
+  add_predictions(mod3db) %>%
+  ggplot(aes(age, pred, color = status))+ geom_line()
+```
+
+also examine the model with an interaction
+>slope of normal = 0.002 and is statistically similar to 0 (p = 0.768)
+>slope of RA is 0.019 higher than normals, and that difference is not significant (p=0.11)
+
+>slope of normal = 4.887e-03 and is statistically similar to 0 (p = 0.50002)
+>slope of RA is 2.847e-06 higher than normals, and that difference is not significant (p=0.99980)
+
+```{r}
+summary(mod3y)
+
+summary(mod3d)
+```
+
+show this model in a plot
+```{r}
+alldat %>%
+  add_predictions(mod3y) %>%
+  ggplot(aes(age, pred, color = status))+ geom_line()
+
+alldat %>%
+  add_predictions(mod3d) %>%
+  ggplot(aes(age, pred, color = status))+ geom_line()
+```
+#### bin by age and look at VAFs
+
+```{r}
+agevafs <- alldat %>% select(age, logY640F, status) #pick the variable 
+
+#make bin labels
+abinlabels <- c("<25","26-40", "41-55", "56-70", ">71")
+
+#make table with bins
+agebins <- as_tibble(agevafs) %>% 
+  mutate(tag = case_when(
+    age <= 25 ~ abinlabels[1],
+    age >= 26 & age <= 40 ~ abinlabels[2],
+    age >= 41 & age <= 55 ~ abinlabels[3],
+    age >= 56 & age <= 70 ~ abinlabels[4],
+    age >= 71 ~ abinlabels[5]
+    ))
+
+summary(agebins)
+
+#make it a factor
+agebins$tag <- factor(agebins$tag,
+                       levels = abinlabels,
+                       ordered = FALSE)
+summary(agebins$tag)
+```
+try plotting
+
+```{r}
+ ggplot(data = agebins, mapping = aes(tag, logY640F, color = status)) +
+   geom_boxplot() +
+guides(color=FALSE)+
+  theme_minimal() 
+
+  
+```
+
+#### bin by age and look at yes no mutation
+
+```{r}
+ggplot(data = agebins, mapping = aes(tag, fill = status)) + 
+    geom_bar( position=position_dodge())
+```
+#### bin by VAF and look at status
+
+
+```{r}
+vafstat <- alldat %>% select(Y640F,status, age) #pick the variable 
+
+#make bin labels
+binlabels <- c("0","[0.008-0.05]", ">0.05")
+
+#make table with bins
+yvafbins <- as_tibble(vafstat) %>% 
+  mutate(tag = case_when(
+    Y640F < 0.008 ~ binlabels[1],
+    Y640F >= 0.008 & Y640F < 0.05 ~ binlabels[2],
+    Y640F >= 0.05 ~ binlabels[3]
+    ))
+
+summary(yvafbins)
+
+#make it a factor
+yvafbins$tag <- factor(yvafbins$tag,
+                       levels = binlabels,
+                       ordered = FALSE)
+summary(yvafbins$tag)
+```
+
+plot bar graph showing percentage in each category that have RA or no
+```{r}
+yvafbins %>%
+  ggplot(aes(tag, fill = status)) + geom_bar(position=position_dodge())
+```
+
+### making yes no bins for VAF
+
+```{r}
+alldat <- alldat %>%
+  mutate(muty640f05 = if_else(Y640F >= 0.05, 1, 0),
+         muty640f008 = if_else(Y640F >= 0.008, 1, 0),
+         mutd661y05 = if_else(D661Y >= 0.05, 1, 0),
+         mutd661y008 = if_else(D661Y >= 0.008, 1, 0))
+
+alldat <- alldat %>%
+  mutate(mutall008 = case_when(D661Y >= 0.008 & Y640F >= 0.008 ~ 1,
+                             D661Y >= 0.008 ~ 1, 
+                             Y640F >= 0.008~ 1,
+                             TRUE ~ 0))
+
+alldat %>%
+  count(status, muty640f05)
+
+alldat %>%
+  count(status, muty640f008)
+```
+
+### running logistic regression with yes no bins
+
+```{r}
+mod83highy <- glm(muty640f05~status +age, data = alldat)
+
+summary(mod83highy)
+
+mod83lowy <- glm(muty640f008~status +age, data = alldat)
+
+summary(mod83lowy)
+
+mod83highd <- glm(mutd661y05~status +age, data = alldat)
+
+summary(mod83highd)
+
+mod83lowd <- glm(mutd661y008~status +age, data = alldat)
+
+summary(mod83lowd)
+
+```
+
+### Running logistic regression with yes no bins
+
+Explaining whether or not someone has >0.05 level (or >0.008 level) of mutation using status and age
+
+```{r}
+mod83highy <- glm(muty640f05 ~ status + age, data = alldat, family = binomial)
+summary(mod83highy)
+
+mod83lowy <- glm(muty640f008~status + age, data = alldat, family = binomial)
+summary(mod83lowy)
+
+mod83highd <- glm(mutd661y05~status +age, data = alldat, family = binomial)
+summary(mod83highd)
+
+mod83lowd <- glm(mutd661y008~status +age, data = alldat, family = binomial)
+summary(mod83lowd)
+
+mod83lowall <- glm(mutall008~status +age, data = alldat, family = binomial)
+summary(mod83lowall)
+
+```
+
+#### Results from logsitic regression for Manuscript
+
+#####All muts >0.008
+Using the model with the 0.008 threshold, here is the interpretation of the model and a plot for the manuscript
+
+```{r}
+summary(mod83lowall)
+```
+
+Interpretation:
+- This model assumes the same effect of age for both RA and normals (no interaction term)
+
+To get predicted probabilities at given ages for each status, use `ggeffect()`
+
+```{r}
+ggeffect(mod83lowall, terms = c("age[20,50]", "status"))
+```
+
+Plot
+
+```{r}
+#retrieve average effect of status
+ggeffect(mod83lowall, terms = c("status"))
+
+#retrieve average age
+summary(alldat$age)
+ggeffect(mod83lowall, terms = c("age[20,49.21]","status"))
+
+ggeffect(mod83lowall, terms = c("age", "status")) %>%
+  as_tibble() %>%
+  rename(age = x,
+         status = group) %>%
+  mutate(status = factor(status, 
+                         levels = c("RA", "normal"),
+                         labels = c("RA", "Healthy"))) %>%
+  ggplot(aes(age, predicted)) +
+  geom_line(aes(color = status),
+            linewidth = 1.5) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = status),
+              alpha = .2) +
+  #geom_point(aes(x=49.21, y=0.09), size = 2)+
+  labs(y = "Predicted Probability of either 
+       Y640F or D661Y Mutation \u2265 0.008%",
+       x = "Age",
+       color = "RA Status",
+       fill = "RA Status") +
+  theme_bw()
+```
+
+#####Y640F
+Using the model with the 0.008 threshold, here is the interpretation of the model and a plot for the manuscript
+
+```{r}
+summary(mod83lowy)
+```
+
+Interpretation:
+- This model assumes the same effect of age for both RA and normals (no interaction term)
+
+To get predicted probabilities at given ages for each status, use `ggeffect()`
+
+```{r}
+ggeffect(mod83lowy, terms = c("age[20,50]", "status"))
+```
+
+Plot
+
+```{r}
+ggeffect(mod83lowy, terms = c("age", "status")) %>%
+  as_tibble() %>%
+  rename(age = x,
+         status = group) %>%
+  mutate(status = factor(status, 
+                         levels = c("RA", "normal"),
+                         labels = c("RA", "Healthy"))) %>%
+  ggplot(aes(age, predicted)) +
+  geom_line(aes(color = status),
+            linewidth = 1.5) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = status),
+              alpha = .2) +
+  labs(y = "Predicted Probability of 
+       Y640F Mutation \u2265 0.008%",
+       x = "Age",
+       color = "RA Status",
+       fill = "RA Status") +
+  theme_bw()
+```
+#####D661Y
+**D661Y**
+Using the model with the 0.008 threshold, here is the interpretation of the model and a plot for the manuscript
+
+```{r}
+summary(mod83lowd)
+```
+
+Interpretation:
+- This model assumes the same effect of age for both RA and normals (no interaction term)
+
+To get predicted probabilities at given ages for each status, use `ggeffect()`
+
+```{r}
+ggeffect(mod83lowd, terms = c("age[20,50]", "status"))
+```
+
+Plot
+
+```{r}
+ggeffect(mod83lowd, terms = c("age", "status")) %>%
+  as_tibble() %>%
+  rename(age = x,
+         status = group) %>%
+  mutate(status = factor(status, 
+                         levels = c("RA", "normal"),
+                         labels = c("RA", "Healthy"))) %>%
+  ggplot(aes(age, predicted)) +
+  geom_line(aes(color = status),
+            linewidth = 1.5) +
+  geom_ribbon(aes(ymin = conf.low,
+                  ymax = conf.high,
+                  fill = status),
+              alpha = .2) +
+  labs(y = "Predicted Probability of 
+       D661Y Mutation \u2265 0.008%",
+       x = "Age",
+       color = "RA Status",
+       fill = "RA Status") +
+  theme_bw()
+```
+
+
+# T TEST by Mutation Y/N
+T-test Assumption Flow chart:
+- Random Sampling -- if not met, no basic statistics are appropriate
+- Independent Samples -- if not met, paired t-test
+- Normality -- if not met, Wilcoxon-Mann-Whitney U test
+- Equal variance -- if not met, Welch's t-test
+- If equal variance and normality are not met, choose which assumption is worse. Wilcox test assumes equal variance
+
+
+Density plots are not the best option to assess normality, qqplots are better
+
+Check the number of WT and Mut
+```{r}
+RA %>%
+  count(Mutation)
+
+```
+
+### Age T Test by Mutation
+> used welch's t test because normality was fine, equal variance was not
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(age, fill = Mutation))+geom_density(alpha = 0.5)
+
+```
+
+normality looks fine, but equal variance may not be met
+
+```{r}
+t.test(age~Mutation, data = RA)
+
+t.test(age~lowvafmut, data = RA)
+t.test(age~ymut, data = RA)
+t.test(age~dmut, data = RA)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(age~Mutation, data = RA)) %>% 
+  mutate(var = "age")
+
+resultstlow <- tidy(t.test(age~lowvafmut, data = RA)) %>% 
+  mutate(var = "age")
+
+resultsty <- tidy(t.test(age~ymut, data = RA)) %>% 
+  mutate(var = "age")
+
+resultstd <- tidy(t.test(age~dmut, data = RA)) %>% 
+  mutate(var = "age")
+
+```
+
+### SJ T Test by Mutation 
+>Notes: couldn't log transform because lots of zeros, ran wilcox on raw, saw no difference
+
+```{r}
+RA %>%
+  ggplot(aes(SJ, fill = Mutation))+geom_density(alpha = 0.5)
+
+#look up zeros
+RA %>%
+  arrange(SJ) %>%
+  select(Mutation, SJ)
+
+
+#data does have lots of zeros, log transform didn't help, should use wilcox
+RA %>%
+  ggplot(aes(SJ))+geom_histogram()
+
+```
+
+Run Wilcox
+```{r}
+wilcox.test(SJ~Mutation, data = RA)
+
+wilcox.test(SJ~lowvafmut, data = RA)
+wilcox.test(SJ~ymut, data = RA)
+wilcox.test(SJ~dmut, data = RA)
+
+#making table of p values for wilcox
+
+resultswcx <- tidy(wilcox.test(SJ~Mutation, data = RA)) %>% 
+  mutate(var = "Swollen Joints")
+
+resultswcxlow <- tidy(wilcox.test(SJ~lowvafmut, data = RA)) %>% 
+  mutate(var = "Swollen Joints")
+resultswcxy <- tidy(wilcox.test(SJ~ymut, data = RA)) %>% 
+  mutate(var = "Swollen Joints")
+resultswcxd <- tidy(wilcox.test(SJ~dmut, data = RA)) %>% 
+  mutate(var = "Swollen Joints")
+
+```
+
+### TJ T Test by Mutation
+> Notes: couldn't log transform because lots of zeros, ran wilcox on raw, saw no difference
+
+```{r}
+RA %>%
+  ggplot(aes(TJ, fill = Mutation))+geom_density(alpha = 0.5)
+
+
+#looks like a log transform would help, so check if data contains zeros first
+RA %>%
+  arrange(TJ) %>%
+  select(Mutation, TJ)
+
+#data does have lots of zeros, so can't log transform, run wilcox test
+```
+
+Wilcox test
+```{r}
+wilcox.test(TJ~Mutation, data = RA)
+
+wilcox.test(TJ~lowvafmut, data = RA)
+wilcox.test(TJ~ymut, data = RA)
+wilcox.test(TJ~dmut, data = RA)
+
+resultswcx <- tidy(wilcox.test(TJ~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Tender Joints") %>% 
+  rbind(resultswcx)
+
+resultswcxlow <- tidy(wilcox.test(TJ~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Tender Joints") %>% 
+  rbind(resultswcxlow)
+resultswcxy <- tidy(wilcox.test(TJ~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Tender Joints") %>% 
+  rbind(resultswcxy)
+resultswcxd <- tidy(wilcox.test(TJ~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Tender Joints") %>% 
+  rbind(resultswcxd)
+
+```
+
+### pt_global T Test by Mutation 
+> Notes: couldn't log transform because lots of zeros, ran wilcox on raw, saw no difference
+
+```{r}
+RA %>%
+  ggplot(aes(pt_global, fill = Mutation))+geom_density(alpha = 0.5)
+
+#looks like a log transform would help, so check if data contains zeros first
+RA %>%
+  arrange(pt_global) %>%
+  select(Mutation, pt_global)
+
+#data does have lots of zeros, so can't log transform, run wilcox test
+```
+
+Wilcox test
+```{r}
+wilcox.test(pt_global~Mutation, data = RA)
+
+wilcox.test(pt_global~lowvafmut, data = RA)
+wilcox.test(pt_global~ymut, data = RA)
+wilcox.test(pt_global~dmut, data = RA)
+
+#making a table for wilcox p values
+resultswcx <- tidy(wilcox.test(pt_global~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Patient Global") %>% 
+  rbind(resultswcx)
+
+resultswcxlow <- tidy(wilcox.test(pt_global~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Patient Global") %>% 
+  rbind(resultswcxlow)
+```
+
+### pro_global T Test by Mutation
+> Notes: couldn't log transform because lots of zeros, ran wilcox on raw, saw no difference
+
+```{r}
+RA %>%
+  ggplot(aes(pro_global, fill = Mutation))+geom_density(alpha = 0.5)
+
+#looks like a log transform would help, so check if data contains zeros first
+RA %>%
+  arrange(pro_global) %>%
+  select(Mutation, pro_global)
+
+#data does have lots of zeros, so can't log transform, run wilcox test
+```
+
+Wilcox test
+```{r}
+wilcox.test(pro_global~Mutation, data = RA)
+
+wilcox.test(pro_global~lowvafmut, data = RA)
+wilcox.test(pro_global~ymut, data = RA)
+wilcox.test(pro_global~dmut, data = RA)
+
+#making a table for wilcox p values
+resultswcx <- tidy(wilcox.test(pro_global~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Provider Global") %>% 
+  rbind(resultswcx)
+
+#making a table for wilcox p values
+resultswcxlow <- tidy(wilcox.test(pro_global~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Provider Global") %>% 
+  rbind(resultswcxlow)
+#making a table for wilcox p values
+resultswcxy <- tidy(wilcox.test(pro_global~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Provider Global") %>% 
+  rbind(resultswcxy)
+#making a table for wilcox p values
+resultswcxd <- tidy(wilcox.test(pro_global~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Provider Global") %>% 
+  rbind(resultswcxd)
+
+```
+
+### hopCCP T Test of Mutation
+> Notes: log transformed and ran equal variance t test and wilcoxon on non-log transformed, wilcoxon seemed most appropriate. not significant
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(hopCCP, fill = Mutation))+geom_density(alpha = 0.5)
+#looks like a log transform would help
+RA %>%
+  arrange(hopCCP) %>%
+  select(Mutation, hopCCP)
+#no zeros, so just take log
+RA %>%
+  ggplot(aes(log(hopCCP), fill = Mutation))+geom_density(alpha = 0.5)
+```
+create logccp
+```{r}
+RA <- RA %>%
+  mutate(loghopccp = log(hopCCP))
+
+#determine quantiles
+RA %>% 
+  group_by(Mutation) %>% 
+  summarise(n= n(), 
+            q10 = quantile(hopCCP, probs = .10),
+            q20 = quantile(hopCCP, probs = .20),
+            q25 = quantile(hopCCP, probs = .25),
+            q30 = quantile(hopCCP, probs = .30),
+            q40 = quantile(hopCCP, probs = .40),
+            q50 = quantile(hopCCP, probs = .50),
+            q60 = quantile(hopCCP, probs = .60),
+            q70 = quantile(hopCCP, probs = .70),
+            q75 = quantile(hopCCP, probs = .75),
+            q80 = quantile(hopCCP, probs = .80),
+            q90 = quantile(hopCCP, probs = .90),
+            )
+```
+run equal variance t test
+normality looks ok and so does variance
+
+```{r}
+t.test(loghopccp~Mutation, data = RA, var.equal = TRUE)
+
+wilcox.test(hopCCP~Mutation, data = RA)
+
+wilcox.test(hopCCP~lowvafmut, data = RA)
+wilcox.test(hopCCP~ymut, data = RA)
+wilcox.test(hopCCP~dmut, data = RA)
+
+#turning this into a dataset
+
+resultswcx <- tidy(wilcox.test(hopCCP~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "current CCP") %>% 
+  rbind(resultswcx)
+
+resultswcxlow <- tidy(wilcox.test(hopCCP~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "current CCP") %>% 
+  rbind(resultswcxlow)
+resultswcxy <- tidy(wilcox.test(hopCCP~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "current CCP") %>% 
+  rbind(resultswcxy)
+resultswcxd <- tidy(wilcox.test(hopCCP~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "current CCP") %>% 
+  rbind(resultswcxd)
+
+#resultst <- tidy(t.test(loghopccp~Mutation, data = RA, var.equal = TRUE)) %>% 
+ # mutate(var = "current CCP") %>% 
+ # rbind(resultst)
+```
+
+### CRP T Test by Mutation
+> Notes: Normality not met, log-transformed and ran t test with equal variance, not significant
+
+```{r}
+RA %>%
+  ggplot(aes(CRP, fill = Mutation))+geom_density(alpha = 0.5)
+#looks like a log transform would help
+RA %>%
+  arrange(CRP) %>%
+  select(Mutation, CRP)
+
+#log transform and take care of zeros
+RA <- RA %>% 
+  mutate(logCRP = log(CRP + 0.01))
+##data does have zeros, so need to do additional modification before log transform
+RA %>%
+  ggplot(aes(logCRP, fill = Mutation))+geom_density(alpha = 0.5)
+
+```
+Run equal variance t test with the log data or use raw data and run wilcox test
+```{r}
+t.test(logCRP~Mutation, data = RA, var.equal = TRUE)
+
+t.test(logCRP~lowvafmut, data = RA, var.equal = TRUE)
+t.test(logCRP~ymut, data = RA, var.equal = TRUE)
+t.test(logCRP~dmut, data = RA, var.equal = TRUE)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(logCRP~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "CRP") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(logCRP~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "CRP") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(logCRP~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "CRP") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(logCRP~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "CRP") %>% 
+  rbind(resultstd)
+
+
+
+```
+
+### ESR T Test by Mutation
+>Notes: Normality not met, log-transformed with small constant and ran t test, checked with wilcox test on raw data, also not significant
+
+```{r}
+RA %>%
+  ggplot(aes(ESR, fill = Mutation))+geom_density(alpha = 0.5)
+
+#looks like a log transform would help, check for zeros
+RA %>%
+  arrange(ESR) %>%
+  select(Mutation, ESR)
+
+#log transform and take care of zeros
+RA <- RA %>% 
+  mutate(logESR = log(ESR + 1))
+
+#data does have zeros, so need to do additional modification before log transform
+RA %>%
+  ggplot(aes(logESR, fill = Mutation))+geom_density(alpha = 0.5)
+```
+
+Run equal variance t test with the log data or use raw data and run wilcox test
+```{r}
+t.test(logESR~Mutation, data = RA)
+wilcox.test(ESR~Mutation, data = RA)
+
+t.test(logESR~lowvafmut, data = RA)
+t.test(logESR~ymut, data = RA)
+t.test(logESR~dmut, data = RA)
+
+#checking if tidy works on wilcox
+#resultswcx <- tidy(wilcox.test(ESR~Mutation, data = RA, var.equal = TRUE)) %>% 
+  #mutate(var = "ESR") %>% 
+  #rbind(resultswcx)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(logESR~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ESR") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(logESR~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ESR") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(logESR~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ESR") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(logESR~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ESR") %>% 
+  rbind(resultstd)
+
+#clears table in case of error
+#resultst <- data.frame()
+```
+
+### wbc T Test by Mutation
+>notes: ran unequal variance t test on log data, not significant
+
+```{r}
+RA %>%
+  ggplot(aes(wbc, fill = Mutation))+geom_density(alpha = 0.5)
+
+#looks like a log transform would help, check for zeros
+RA %>%
+  arrange(wbc) %>%
+  select(Mutation, wbc)
+
+#no zeros, so just take log
+RA %>%
+  ggplot(aes(log(wbc), fill = Mutation))+geom_density(alpha = 0.5)
+```
+Variance was not equal, did unequal variance t test on log data
+```{r}
+t.test(log(wbc)~Mutation, data = RA)
+
+t.test(log(wbc)~lowvafmut, data = RA)
+t.test(log(wbc)~ymut, data = RA)
+t.test(log(wbc)~dmut, data = RA)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(log(wbc)~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "WBC") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(log(wbc)~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "WBC") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(log(wbc)~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "WBC") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(log(wbc)~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "WBC") %>% 
+  rbind(resultstd)
+```
+
+```{r}
+RA %>%
+  ggplot(aes(sample = wbc)) + 
+  geom_qq()+
+  geom_qq_line()+
+  facet_wrap(~Mutation)
+
+RA %>%
+  ggplot(aes(sample = log(wbc))) + 
+  geom_qq()+
+  geom_qq_line()+
+  facet_wrap(~Mutation)
+```
+### ALC T Test by Mutation
+>Notes: Data looks normal with unequal variance, used unequal variance t test, not significant
+
+```{r}
+RA %>%
+  ggplot(aes(ALC, fill = Mutation))+geom_density(alpha = 0.5)
+```
+Run unequal variance t test with the data
+```{r}
+t.test(ALC~Mutation, data = RA)
+
+t.test(ALC~lowvafmut, data = RA)
+t.test(ALC~ymut, data = RA)
+t.test(ALC~dmut, data = RA)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(ALC~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ALC") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(ALC~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ALC") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(ALC~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ALC") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(ALC~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ALC") %>% 
+  rbind(resultstd)
+
+#wilcox.test(ALC~Mutation, data = RA)
+```
+
+Density plots are not the best option to assess normality, qqplots are better
+```{r}
+RA %>%
+  ggplot(aes(sample = ALC)) + 
+  geom_qq()+
+  geom_qq_line()+
+  facet_wrap(~Mutation)
+```
+
+### ANC T Test by Mutation by 
+>ran both equal variance t test on log data and wilcox on raw data, no significance 
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(ANC, fill = Mutation))+geom_density(alpha = 0.5)
+#looks like a log transform would help
+RA %>%
+  arrange(ANC) %>%
+  select(Mutation, ANC)
+#no zeros, so just take log
+RA %>%
+  ggplot(aes(log(ANC), fill = Mutation))+geom_density(alpha = 0.5)
+```
+Run equal variance t test with the log data or use raw data and run wilcox test
+```{r}
+t.test(log(ANC)~Mutation, data = RA, var.equal = TRUE)
+
+wilcox.test(ANC~Mutation, data = RA)
+
+t.test(log(ANC)~lowvafmut, data = RA, var.equal = TRUE)
+t.test(log(ANC)~ymut, data = RA, var.equal = TRUE)
+t.test(log(ANC)~dmut, data = RA, var.equal = TRUE)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(log(ANC)~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ANC") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(log(ANC)~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ANC") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(log(ANC)~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ANC") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(log(ANC)~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "ANC") %>% 
+  rbind(resultstd)
+
+```
+
+T-test Assumption Flow chart:
+- Random Sampling -- if not met, no basic statistics are appropriate
+- Independent Samples -- if not met, paired t-test
+- Normality -- if not met, Wilcoxon-Mann-Whitney U test
+- Equal variance -- if not met, Welch's t-test
+- If equal variance and normality are not met, choose which assumption is worse. Wilcox test assumes equal variance
+
+
+Density plots are not the best option to assess normality, qqplots are better
+```{r}
+RA %>%
+  ggplot(aes(sample = ANC)) + 
+  geom_qq()+
+  geom_qq_line()+
+  facet_wrap(~Mutation)
+
+RA %>%
+  ggplot(aes(sample = log(ANC))) + 
+  geom_qq()+
+  geom_qq_line()+
+  facet_wrap(~Mutation)
+```
+
+### T Test of Mutation by txnum
+>notes: ran unequal variance t test on log data with added constant, saw no significance
+
+```{r}
+RA %>%
+  ggplot(aes(txnum, fill = Mutation))+geom_density(alpha = 0.5)
+
+#check for zeros to see if log transform is applicable
+RA %>%
+  arrange(txnum) %>%
+  select(Mutation, txnum)
+
+#log transform and add value
+RA <- RA %>% 
+  mutate(logtxnum = log(txnum + 0.5))
+
+#data does have zeros, so need to do additional modification before log transform
+RA %>%
+  ggplot(aes(logtxnum, fill = Mutation))+geom_density(alpha = 0.5)
+```
+Run unequal variance t test with the log data
+```{r}
+t.test(logtxnum~Mutation, data = RA)
+
+t.test(logtxnum~lowvafmut, data = RA)
+t.test(logtxnum~ymut, data = RA)
+t.test(logtxnum~dmut, data = RA)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(logtxnum~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Number of Treatments") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(logtxnum~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Number of Treatments") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(logtxnum~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Number of Treatments") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(logtxnum~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Number of Treatments") %>% 
+  rbind(resultstd)
+
+```
+
+### RF T Test by Mutation
+> trying test with neg and pos removed, all others set to raw number
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(RFnumna, fill = Mutation))+geom_density(alpha = 0.5)
+
+```
+normality not fine, lots of 20s that could be something else with diff sensitivity, so best test is wilcoxon
+```{r}
+wilcox.test(RFnumna~Mutation, data = RA)
+
+RA %>% 
+  drop_na(Mutation, RFnumna) %>% 
+  group_by(Mutation) %>% 
+  summarise(n= n(), 
+            q10 = quantile(RFnumna, probs = .10),
+            q20 = quantile(RFnumna, probs = .20),
+            q30 = quantile(RFnumna, probs = .30),
+            q40 = quantile(RFnumna, probs = .40),
+            q50 = quantile(RFnumna, probs = .50),
+            q60 = quantile(RFnumna, probs = .60),
+            q70 = quantile(RFnumna, probs = .70),
+            q80 = quantile(RFnumna, probs = .80),
+            q90 = quantile(RFnumna, probs = .90)
+            )
+
+wilcox.test(RFnumna~lowvafmut, data = RA)
+wilcox.test(RFnumna~ymut, data = RA)
+wilcox.test(RFnumna~dmut, data = RA)
+
+```
+Using wilcox with neg pos as missing not significant result, nos are lower than yeses
+
+
+trying wilcox with neg pos filled in with medians, see cleaning
+```{r}
+wilcox.test(RFnum~Mutation, data = RA)
+
+wilcox.test(RFnum~lowvafmut, data = RA)
+wilcox.test(RFnum~ymut, data = RA)
+wilcox.test(RFnum~dmut, data = RA)
+
+RA %>% 
+  drop_na(Mutation, RFnum) %>% 
+  group_by(Mutation) %>% 
+  summarise(n= n(), 
+            q10 = quantile(RFnum, probs = .10),
+            q20 = quantile(RFnum, probs = .20),
+            q25 = quantile(RFnum, probs = .25),
+            q30 = quantile(RFnum, probs = .30),
+            q40 = quantile(RFnum, probs = .40),
+            q50 = quantile(RFnum, probs = .50),
+            q60 = quantile(RFnum, probs = .60),
+            q70 = quantile(RFnum, probs = .70),
+            q75 = quantile(RFnum, probs = .75),
+            q80 = quantile(RFnum, probs = .80),
+            q90 = quantile(RFnum, probs = .90)
+            )
+
+#making a table for wilcox p values
+resultswcx <- tidy(wilcox.test(RFnum~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "RF") %>% 
+  rbind(resultswcx)
+
+resultswcxlow <- tidy(wilcox.test(RFnum~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "RF") %>% 
+  rbind(resultswcxlow)
+resultswcxy <- tidy(wilcox.test(RFnum~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "RF") %>% 
+  rbind(resultswcxy)
+resultswcxd <- tidy(wilcox.test(RFnum~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "RF") %>% 
+  rbind(resultswcxd)
+
+```
+
+trying wilcox with neg pos filled in with conservative values 21 and 20
+```{r}
+wilcox.test(RFcons~Mutation, data = RA)
+
+```
+### CCP T Test by Mutation
+> trying test with neg and pos removed, all others set to raw number
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(CCPnumna, fill = Mutation))+geom_density(alpha = 0.5)
+
+RA %>%
+  ggplot(aes(CCPnumna, fill = lowvafmut))+geom_density(alpha = 0.5)
+
+```
+normality not fine, lots mins and maxs that could be something else with diff sensitivity, so best test is wilcoxon
+
+```{r}
+wilcox.test(CCPnumna~Mutation, data = RA)
+
+wilcox.test(CCPnumna~lowvafmut, data = RA)
+wilcox.test(CCPnumna~ymut, data = RA)
+wilcox.test(CCPnumna~dmut, data = RA)
+
+
+```
+
+trying wilcox with neg pos filled in with medians, see cleaning
+```{r}
+wilcox.test(CCPnum~Mutation, data = RA)
+
+RA %>% 
+  drop_na(Mutation, CCPnum) %>% 
+  group_by(Mutation) %>% 
+  summarise(n= n(), 
+            q10 = quantile(CCPnum, probs = .10),
+            q20 = quantile(CCPnum, probs = .20),
+            q25 = quantile(CCPnum, probs = .25),
+            q30 = quantile(CCPnum, probs = .30),
+            q40 = quantile(CCPnum, probs = .40),
+            q50 = quantile(CCPnum, probs = .50),
+            q60 = quantile(CCPnum, probs = .60),
+            q70 = quantile(CCPnum, probs = .70),
+            q75 = quantile(CCPnum, probs = .75),
+            q80 = quantile(CCPnum, probs = .80),
+            q90 = quantile(CCPnum, probs = .90),
+            )
+
+wilcox.test(CCPnum~lowvafmut, data = RA)
+
+wilcox.test(CCPnum~ymut, data = RA)
+
+wilcox.test(CCPnum~dmut, data = RA)
+
+#turning it into a dataset
+
+resultswcx <- tidy(wilcox.test(CCPnum~Mutation, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Historical CCP") %>% 
+  rbind(resultswcx)
+
+resultswcxlow <- tidy(wilcox.test(CCPnum~lowvafmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Historical CCP") %>% 
+  rbind(resultswcxlow)
+resultswcxy <- tidy(wilcox.test(CCPnum~ymut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Historical CCP") %>% 
+  rbind(resultswcxy)
+resultswcxd <- tidy(wilcox.test(CCPnum~dmut, data = RA, var.equal = TRUE)) %>% 
+  mutate(var = "Historical CCP") %>% 
+  rbind(resultswcxd)
+
+```
+
+### Time Since Dx T Test by Mutation
+> log transformed with small constant and ran T test, difference was significant
+
+make a plot
+```{r}
+RA %>%
+  ggplot(aes(RAtime, fill = Mutation))+geom_density(alpha = 0.5)
+
+RA %>%
+  ggplot(aes(RAtime, fill = lowvafmut))+geom_density(alpha = 0.5)
+
+```
+
+check for zeros and log transform
+```{r}
+#check for zeros to see if log transform is applicable
+RA %>%
+  arrange(RAtime) %>%
+  select(Mutation, RAtime)
+
+#log transform and add value
+RA <- RA %>% 
+  mutate(logRAtime = log(RAtime + 0.5))
+
+#data does have zeros, so need to do additional modification before log transform
+RA %>%
+  ggplot(aes(logRAtime, fill = Mutation))+geom_density(alpha = 0.5)
+
+```
+Run unequal variance t test with the log data
+```{r}
+t.test(logRAtime~Mutation, data = RA)
+
+t.test(logRAtime~lowvafmut, data = RA)
+t.test(logRAtime~ymut, data = RA)
+t.test(logRAtime~dmut, data = RA)
+
+#turning this into a dataset
+
+resultst <- tidy(t.test(logRAtime~Mutation, data = RA)) %>% 
+  mutate(var = "Time Since Dx") %>% 
+  rbind(resultst)
+
+resultstlow <- tidy(t.test(logRAtime~lowvafmut, data = RA)) %>% 
+  mutate(var = "Time Since Dx") %>% 
+  rbind(resultstlow)
+resultsty <- tidy(t.test(logRAtime~ymut, data = RA)) %>% 
+  mutate(var = "Time Since Dx") %>% 
+  rbind(resultsty)
+resultstd <- tidy(t.test(logRAtime~dmut, data = RA)) %>% 
+  mutate(var = "Time Since Dx") %>% 
+  rbind(resultstd)
+
+```
+
+
+# ANOVAs for quantitative data by mutation type (WT, D661Y, Y640F)
+Variables are: "age", "SJ", "TJ", "pt_global", "pro_global", "hopCCP", "CRP", "ESR", "wbc", "ALC", "ANC", "txnum"
+
+warning: the age and sj must come first when making datasets for p values because all other vars have append, and if order is switched, the file will overwrite
+
+look at count of mutation type
+```{r}
+RA %>% count(muttype)
+
+RA %>% count(muttypelow)
+```
+
+make RA object without muttype na
+```{r}
+RA3 <- RA %>% drop_na(muttype)
+
+RA4 <- RA %>% drop_na(muttypelow)
+```
+
+
+### Age Anova
+> nonequal variance so ran welch's anova, not significant p = 0.246
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, age))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, age))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met
+ignore the 4th plot
+```{r}
+mod<- lm(age~muttype, data = RA3)
+plot(mod)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(age~muttype)
+
+RA4 %>% welch_anova_test(age~muttypelow)
+
+#making a dataset
+welch <- 
+  RA3 %>% welch_anova_test(age~muttype)
+
+welch008 <-
+  RA4 %>% welch_anova_test(age~muttypelow)
+
+
+# this code could make a csv, but we want a dataset
+
+#RA3 %>% welch_anova_test(age~muttype) %>% 
+#  write_csv(file = "welch.csv")
+
+```
+
+### SJ anova
+> ran kruskal-wallis, not significant 
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, SJ))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, SJ))+geom_boxplot()
+```
+
+Lots of zeros, log transform won't help, run Kruskal-Wallis
+```{r}
+RA3 %>% kruskal_test(SJ~muttype)
+
+RA4 %>% kruskal_test(SJ~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(SJ~muttype)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(SJ~muttypelow)
+```
+
+### TJ anova
+> ran kruskal-wallis, not significant 
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, TJ))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, TJ))+geom_boxplot()
+```
+
+Lots of zeros, log transform won't help, run Kruskal-Wallis
+```{r}
+RA3 %>% kruskal_test(TJ~muttype)
+
+RA4 %>% kruskal_test(TJ~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(TJ~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(TJ~muttypelow) %>% 
+  rbind(kruskal008)
+```
+
+### pt_global anova
+> ran kruskal-wallis, not significant 
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, pt_global))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, pt_global))+geom_boxplot()
+```
+
+Lots of zeros, log transform won't help, run Kruskal-Wallis
+```{r}
+RA3 %>% kruskal_test(pt_global~muttype)
+
+RA4 %>% kruskal_test(pt_global~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(pt_global~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(pt_global~muttypelow) %>% 
+  rbind(kruskal008)
+```
+
+### pro_global anova
+> ran kruskal-wallis, not significant 
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, pro_global))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, pro_global))+geom_boxplot()
+```
+
+Lots of zeros, log transform won't help, run Kruskal-Wallis
+```{r}
+RA3 %>% kruskal_test(pro_global~muttype)
+
+RA4 %>% kruskal_test(pro_global~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(pro_global~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(pro_global~muttypelow) %>% 
+  rbind(kruskal008)
+```
+### hopCCP anova
+> no sig with welch's and also testing mutations alone
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, hopCCP))+geom_boxplot()
+
+# try log transform. there are no zeros
+RA3 %>% ggplot(aes(muttype, log(hopCCP)))+geom_boxplot()
+
+
+RA4 %>% ggplot(aes(muttypelow, hopCCP))+geom_boxplot()
+
+# try log transform. there are no zeros
+RA4 %>% ggplot(aes(muttypelow, log(hopCCP)))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met
+ignore the 4th plot
+```{r}
+mod<- lm(log(hopCCP)~muttype, data = RA3)
+plot(mod)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(log(hopCCP)~muttype)
+
+RA4 %>% welch_anova_test(log(hopCCP)~muttypelow)
+
+#making a dataset
+
+welch <- 
+  RA3 %>% welch_anova_test(log(hopCCP)~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(log(hopCCP)~muttypelow) %>% 
+  rbind(welch008)
+
+# appending to hypothetical csv
+
+#RA3 %>% welch_anova_test(log(hopCCP)~muttype)%>% 
+#  write_csv(file = "welch.csv", append = TRUE)
+
+#RA4 %>% welch_anova_test(log(hopCCP)~muttypelow)%>% 
+#  write_csv(file = "welch.csv", append = TRUE)
+```
+
+trying welch's t test on mut instead of muttype after seeing difference in box plot
+```{r}
+t.test(log(hopCCP)~muts, data = RA3)
+
+t.test(log(hopCCP)~muts008, data = RA4)
+```
+### CCP anova
+> ran kruskal-wallis because really bad normality, not significant
+
+using medians filled in ccp values
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, CCPnum))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, CCPnum))+geom_boxplot()
+
+#there are zeros, so can't log transform
+RA3 %>% 
+  arrange(CCPnum) %>% 
+  select(muttype, CCPnum)
+```
+Run anova in order to test assumptions
+getting error in first line of this
+```{r}
+modccp <- lm(CCPnum~muttype, data = RA3)
+plot(modccp)
+```
+
+normality is really bad, so kruskal
+```{r}
+RA3 %>% kruskal_test(CCPnum~muttype)
+
+RA4 %>% kruskal_test(CCPnum~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(CCPnum~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(CCPnum~muttypelow) %>% 
+  rbind(kruskal008)
+
+```
+### RF anova
+> ran kruskal-wallis, not significant
+
+using medians filled in RF values
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, RFnum))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, RFnum))+geom_boxplot()
+
+#there are no zeros, so can log transform
+RA3 %>% 
+  arrange(RFnumna) %>% 
+  select(muttype, RFnumna)
+
+RA3 %>% ggplot(aes(muttype, log(RFnum)))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, log(RFnum)))+geom_boxplot()
+```
+Run anova in order to test assumptions
+getting error in first line of this
+```{r}
+modccp <- lm(log(RFnum)~muttype, data = RA3)
+plot(modccp)
+```
+
+normality is really bad, so kruskal
+```{r}
+RA3 %>% kruskal_test(log(RFnum)~muttype)
+
+RA4 %>% kruskal_test(log(RFnum)~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(RFnum~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(RFnum~muttypelow) %>% 
+  rbind(kruskal008)
+
+```
+
+### CRP anova
+> ran kruskal-wallis, significant
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, CRP))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, CRP))+geom_boxplot()
+
+#there are zeros, so can't log transform
+RA3 %>% 
+  arrange(CRP) %>% 
+  select(muttype, CRP)
+```
+Run anova in order to test assumptions
+getting error in first line of this
+```{r}
+modcrp <- lm(CRP~muttype, data = RA3)
+plot(modcrp)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(CRP~muttype)
+
+RA4 %>% welch_anova_test(CRP~muttypelow)
+
+#making a data set
+welch <- 
+  RA3 %>% welch_anova_test(CRP~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(CRP~muttypelow) %>% 
+  rbind(welch008)
+```
+tried kruskal because the welch was unexpectedly significant, and neither condition is well met
+```{r}
+RA3 %>% kruskal_test(CRP~muttype)
+
+RA4 %>% kruskal_test(CRP~muttypelow)
+
+```
+post hoc testing to see where the difference is coming from
+-shows that it is from wt to y640f comparison, but on their own, none are significant
+```{r}
+games_howell_test(RA3, formula = CRP~muttype)
+```
+
+
+trying welch's t test on mut instead of muttype after seeing difference in both statistical tests
+```{r}
+t.test(CRP~muts, data = RA3)
+
+t.test(CRP~muts008, data = RA4)
+```
+###ESR anova
+
+>unequal variance worse than normality, so did welch's, not significant
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, ESR))+geom_boxplot()
+
+#there are zeros, so can't log transform
+RA3 %>% 
+  arrange(ESR) %>% 
+  select(muttype, ESR)
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met better than variance
+ignore the 4th plot
+```{r}
+modesr<- lm(ESR~muttype, data = RA3)
+plot(modesr)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(ESR~muttype)
+
+RA4 %>% welch_anova_test(ESR~muttypelow)
+
+
+#making a dataset
+
+welch <- 
+  RA3 %>% welch_anova_test(ESR~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(ESR~muttypelow) %>% 
+  rbind(welch008)
+
+```
+
+### wbc anova
+> unequal variance, used welch's anova, no significance
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, wbc))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, wbc))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met
+ignore the 4th plot
+```{r}
+modwbc<- lm(wbc~muttype, data = RA3)
+plot(modwbc)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(wbc~muttype)
+
+RA4 %>% welch_anova_test(wbc~muttypelow)
+
+#making a dataset
+welch <- 
+  RA3 %>% welch_anova_test(wbc~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(wbc~muttypelow) %>% 
+  rbind(welch008)
+
+```
+
+### ALC anova
+> unequal variance, used welch's anova, no significance
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, ALC))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, ALC))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met
+ignore the 4th plot
+```{r}
+modalc<- lm(ALC~muttype, data = RA3)
+plot(modalc)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(ALC~muttype)
+
+RA4 %>% welch_anova_test(ALC~muttypelow)
+
+#for making a dataset that can be put together for a later excel file
+
+welch <- 
+  RA3 %>% welch_anova_test(ALC~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(ALC~muttypelow) %>% 
+  rbind(welch008)
+
+
+#for making a csv that can be read in excel
+
+#RA4 %>% welch_anova_test(ALC~muttypelow)%>% 
+#  write_csv(file = "welch.csv", append = TRUE)
+
+```
+
+### ANC anova
+> both variance and normality did not seem to be met, so ran welch and kruskal wallis, neither was significant, put welch in dataset because variance seemed worse than normality
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, ANC))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, ANC))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is also not met
+ignore the 4th plot
+```{r}
+modanc<- lm(ANC~muttype, data = RA3)
+plot(modanc)
+```
+
+nonequal variance, so welch's anova
+normality also bad, so also kruskal
+```{r}
+RA3 %>% welch_anova_test(ANC~muttype)
+
+RA3 %>% kruskal_test(ANC~muttype)
+
+RA4 %>% welch_anova_test(ANC~muttypelow)
+
+RA4 %>% kruskal_test(ANC~muttypelow)
+
+#making a dataset
+welch <- 
+  RA3 %>% welch_anova_test(ANC~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(ANC~muttypelow) %>% 
+  rbind(welch008)
+```
+
+### txnum anova
+> unequal variance, used welch's anova, no significance
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, txnum))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, txnum))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, don't have equal variance
+based on second plot, normality is met
+ignore the 4th plot
+```{r}
+mod<- lm(txnum~muttype, data = RA3)
+plot(mod)
+```
+
+nonequal variance, so welch's anova
+```{r}
+RA3 %>% welch_anova_test(txnum~muttype)
+
+RA4 %>% welch_anova_test(txnum~muttypelow)
+
+#making a dataset
+
+welch <- 
+  RA3 %>% welch_anova_test(txnum~muttype) %>% 
+  rbind(welch)
+
+welch008 <-
+  RA4 %>% welch_anova_test(txnum~muttypelow) %>% 
+  rbind(welch008)
+```
+
+### time since dx anova
+> normality bad, used kruskall wallis anova, no significance
+
+Make a box plot
+```{r}
+RA3 %>% ggplot(aes(muttype, RAtime))+geom_boxplot()
+
+RA4 %>% ggplot(aes(muttypelow, RAtime))+geom_boxplot()
+```
+
+Run anova in order to test assumptions
+based on first plot, variance iffy
+based on second plot, normality is not met
+ignore the 4th plot
+```{r}
+mod<- lm(RAtime~muttype, data = RA3)
+plot(mod)
+```
+
+
+normality bad, so kruskal
+```{r}
+RA3 %>% kruskal_test(RAtime~muttype)
+
+RA4 %>% kruskal_test(RAtime~muttypelow)
+
+#making a data set
+kruskal <- 
+  RA3 %>% kruskal_test(RAtime~muttype) %>% 
+  rbind(kruskal)
+
+kruskal008 <-
+  RA4 %>% kruskal_test(RAtime~muttypelow) %>% 
+  rbind(kruskal008)
+```
+
+
+# adjust p values of all data sets
+
+Adjusting p values for quantitative variables in sup table 2
+```{r}
+#creating a data set to adjust p values for quantitative variables
+pquant <- resultst %>% 
+  select(p.value, var)
+
+pquant <- resultswcx %>% 
+  select(p.value, var) %>% 
+  rbind(pquant)
+
+pquantlow <- resultstlow %>% 
+  select(p.value, var)
+
+pquantlow <- resultswcxlow %>% 
+  select(p.value, var) %>% 
+  rbind(pquantlow)
+
+#adjusting pvalues
+pquant <- pquant %>%
+  mutate(p.adj = p.adjust(p.value, method = "holm"))
+
+pquantlow <- pquantlow %>%
+  mutate(p.adj = p.adjust(p.value, method = "holm"))
+
+
+```
+
+Adjusting p values for quantitative variables from anova testing in sup table 3
+```{r}
+#creating a data set to adjust p values for quantitative variables
+pquanta <- kruskal %>% 
+  select(p, '.y.')
+
+pquanta <- welch %>% 
+  select(p, '.y.') %>% 
+  rbind(pquanta)
+
+pquanta008 <- kruskal008 %>% 
+  select(p, '.y.')
+
+pquanta008 <- welch008 %>% 
+  select(p, '.y.') %>% 
+  rbind(pquanta008)
+
+#adjusting pvalues
+pquanta <- pquanta %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))
+
+pquanta008 <- pquanta008 %>%
+  mutate(p.adj = p.adjust(p, method = "holm"))
+
+```
+
+
+# Making Tables for p Values
+
+each dataset for the excel file is made in the respective section of the code
+```{r}
+
+write_xlsx(list(chiwtvmut = Pchi,
+                #chiWTvY640F = Pchiy,
+                #chiWTvD661Y = Pchid,
+                chiWTvmut008 = Pchi008,
+                chiadjwtvmut = padjchi,
+                #chiadjWTvY640F = padjchiy,
+                #chiadjWTvD661Y = padjchid,
+                chiadjWTvmut008 = padjchi008,
+                chiadjWTvmuttype = padjchimut,
+                chiadjWTvmuttype008 = padjchimut008),
+            "chis.xlsx")
+
+write_xlsx(list(twtvmut = resultst,
+                #tWTvY640F = resultsty,
+                #tWTvD661Y = resultstd,
+                tWTvmut008 = resultstlow,
+                wcxwtvmut = resultswcx,
+                #wcxWTvY640F = resultswcxy,
+                #wcxWTvD661Y = resultswcxd,
+                wcxWTvmut008 = resultswcxlow,
+                padj = pquant,
+                padj008 = pquantlow),
+            "ttests.xlsx")
+
+write_xlsx(list(kruskal = kruskal,
+                kruskal008 = kruskal008,
+                welch = welch,
+                welch008 = welch008,
+                padj = pquanta,
+                padj008 = pquanta008),
+            "anovas.xlsx")
+
+```
+
+
+# Odds and Ends for the Paper
+
+values for the results section
+```{r}
+# get number of patients exposed to mtx for results section of paper
+RA %>% 
+  count(mtx)
+
+# get number of patients exposed to tnf for results section of paper
+RA %>% 
+  count(tnf)
+
+# get number of patients with erosive disease for results section of paper
+RA %>% 
+  count(erosive)
+
+# get number of patients low and remission disease for results section of paper
+RA %>% 
+  count(descriptive)
+
+#get averages by muttype for CRP for results section of paper
+RA %>% 
+  drop_na(muttype, CRP) %>% 
+  group_by(muttype) %>% 
+  summarise(n= n(),
+            mean(CRP))
+
+RA %>% 
+  count('Y640F' >0.05)
+```
+
+
+values for figure 4
+```{r}
+#4A) get percentage of each group with rf positivity
+RA %>% 
+  count(Mutation, RFpos)
+
+RA %>% 
+  drop_na(Mutation, CCPnum) %>% 
+  group_by(Mutation) %>% 
+  summarise(n= n(),
+            median(CCPnum))
+
+#4C) get percentage of each group with historical CCP positivity
+RA %>% 
+  count(Mutation, CCPpos)
+
+#4E) get percentage of each group with current CCP positivity
+RA %>% 
+  count(Mutation, hopCCPpos)
+
+#4G) get percentage of each group with double positivity
+RA %>% 
+  count(Mutation, rfccp)
+
+
+```
+
+values for supp figure 3
+```{r}
+#sup3A) get percentage of each group with rf positivity
+RA %>% 
+  count(lowvafmut, RFpos)
+
+#sup3B) get percentage of each group with historical CCP positivity
+RA %>% 
+  count(lowvafmut, CCPpos)
+
+#sup3c) get percentage of each group with current CCP positivity
+RA %>% 
+  count(lowvafmut, hopCCPpos)
+
+#sup3d) get percentage of each group with double positivity
+RA %>% 
+  count(lowvafmut, rfccp)
+
+
+```
